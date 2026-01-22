@@ -23,6 +23,8 @@ celery_app.conf.update(
     task_track_started=True,
     task_time_limit=3600 * 2,  # 2 hours max
     worker_prefetch_multiplier=1,
+    task_always_eager=settings.CELERY_ALWAYS_EAGER,
+    task_eager_propagates=True,
 )
 
 # Route tasks to dedicated queues so you can run separate workers:

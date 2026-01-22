@@ -15,8 +15,16 @@ from app.db import models  # Import all models
 # this is the Alembic Config object
 config = context.config
 
+def _normalize_database_url(url: str) -> str:
+    # If user provides "postgresql://", SQLAlchemy defaults to psycopg2.
+    # We ship psycopg v3 by default (psycopg[binary]).
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return url
+
+
 # Override sqlalchemy.url from config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", _normalize_database_url(settings.DATABASE_URL))
 
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:

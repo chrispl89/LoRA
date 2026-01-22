@@ -1,16 +1,18 @@
 # FastAPI
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
+fastapi>=0.115.0,<0.116.0
+uvicorn[standard]>=0.30.0,<0.31.0
 python-multipart==0.0.6
 
 # Database
-sqlalchemy==2.0.23
-alembic==1.12.1
-psycopg2-binary==2.9.9
+sqlalchemy>=2.0.36,<2.1.0
+alembic>=1.14.0,<2.0.0
+# NOTE: psycopg2-binary does not ship wheels for some newer Python versions (e.g. 3.13).
+# Use psycopg v3 binary wheels instead.
+psycopg[binary]==3.2.3
 
 # Validation
-pydantic==2.5.0
-pydantic-settings==2.1.0
+pydantic>=2.10.0,<3.0.0
+pydantic-settings>=2.6.0,<3.0.0
 email-validator==2.1.0
 
 # Celery
@@ -22,7 +24,7 @@ boto3==1.29.7
 minio==7.2.0
 
 # Image processing
-Pillow==10.1.0
+Pillow==11.1.0
 imagehash==4.3.1
 
 # Security
