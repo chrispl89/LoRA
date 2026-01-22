@@ -57,10 +57,11 @@ minio server minio-data --console-address ":9001"
 ### 2. Konfiguracja środowiska
 
 ```bash
-# Skopiuj plik środowiskowy
-cp .env.example .env
+# Skopiuj plik środowiskowy (w tym repo nie używamy `.env.example`, bo pliki `.env*`
+# bywają blokowane przez ustawienia bezpieczeństwa w niektórych środowiskach)
+cp backend/env.example backend/.env
 
-# Edytuj .env i ustaw:
+# Edytuj `backend/.env` i ustaw:
 # - DATABASE_URL=postgresql://postgres:postgres@localhost:5432/lora_person
 # - REDIS_URL=redis://localhost:6379/0
 # - MINIO_ENDPOINT=localhost:9000

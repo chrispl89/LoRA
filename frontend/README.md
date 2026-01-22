@@ -5,6 +5,9 @@ Next.js frontend dla LoRA Person MVP.
 ## Uruchomienie
 
 ```bash
+# Konfiguracja
+cp env.example .env.local
+
 # Instalacja
 npm install
 
