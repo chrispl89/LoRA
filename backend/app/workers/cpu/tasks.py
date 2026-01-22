@@ -12,7 +12,7 @@ from sqlalchemy import func
 from app.celery_app import celery_app
 from app.db.session import SessionLocal
 from app.db import models
-from app.services.s3 import s3_service
+from app.services.s3 import get_s3_service
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -64,6 +64,7 @@ def preprocess_person_task(self, person_id: int, preprocess_run_id: int):
         
         # Create temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
+            s3 = get_s3_service()
             temp_path = Path(temp_dir)
             processed_dir = temp_path / "processed"
             processed_dir.mkdir()
@@ -78,7 +79,7 @@ def preprocess_person_task(self, person_id: int, preprocess_run_id: int):
                 try:
                     # Download photo
                     local_path = temp_path / f"photo_{photo.id}.tmp"
-                    s3_service.download_file(photo.s3_key, str(local_path))
+                    s3.download_file(photo.s3_key, str(local_path))
                     
                     # Open and validate
                     img = Image.open(local_path)
@@ -115,7 +116,7 @@ def preprocess_person_task(self, person_id: int, preprocess_run_id: int):
                     
                     # Upload to S3
                     output_key = f"datasets/processed/{person_id}/{processed_filename}"
-                    s3_service.upload_file(str(processed_path), output_key, "image/jpeg")
+                    s3.upload_file(str(processed_path), output_key, "image/jpeg")
                     
                     # Update photo
                     photo.status = "processed"

@@ -1,9 +1,6 @@
 """
 Person profile endpoints.
 """
-import os
-import re
-import uuid
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -12,12 +9,11 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from app.api.dependencies import get_db
 from app.db import models
-from app.services.s3 import s3_service
+from app.services.s3 import get_s3_service
 from app.core.config import settings
 from app.core.guardrails import validate_consent
 from app.core.logging import get_logger
 from app.workers.cpu.tasks import preprocess_person_task
-from app.workers.gpu.tasks import train_model_task, generate_image_task
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -127,6 +123,7 @@ def get_person(person_id: int, db: Session = Depends(get_db)):
 @router.delete("/{person_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_person(person_id: int, db: Session = Depends(get_db)):
     """Delete person data (soft delete + S3 cleanup)."""
+    s3 = get_s3_service()
     person = db.query(models.PersonProfile).filter(
         models.PersonProfile.id == person_id,
         models.PersonProfile.deleted_at.is_(None)
@@ -145,7 +142,7 @@ def delete_person(person_id: int, db: Session = Depends(get_db)):
     ).all()
     for photo in photos:
         try:
-            s3_service.delete_file(photo.s3_key)
+            s3.delete_file(photo.s3_key)
         except Exception as e:
             logger.error("photo_delete_failed", photo_id=photo.id, error=str(e))
     
@@ -153,16 +150,16 @@ def delete_person(person_id: int, db: Session = Depends(get_db)):
     for model in person.models:
         for version in model.versions:
             if version.artifact_s3_prefix:
-                s3_service.delete_prefix(version.artifact_s3_prefix)
+                s3.delete_prefix(version.artifact_s3_prefix)
     
     # Delete generations
     for model in person.models:
         for version in model.versions:
             for generation in version.generations:
                 if generation.output_s3_key:
-                    s3_service.delete_file(generation.output_s3_key)
+                    s3.delete_file(generation.output_s3_key)
                 if generation.thumbnail_s3_key:
-                    s3_service.delete_file(generation.thumbnail_s3_key)
+                    s3.delete_file(generation.thumbnail_s3_key)
     
     logger.info("person_deleted", person_id=person_id)
     return None
@@ -171,6 +168,7 @@ def delete_person(person_id: int, db: Session = Depends(get_db)):
 @router.post("/{person_id}/uploads/presign", response_model=PresignUploadResponse)
 def presign_upload(person_id: int, request: PresignUploadRequest, db: Session = Depends(get_db)):
     """Generate presigned URL for photo upload."""
+    s3 = get_s3_service()
     # Check person exists
     person = db.query(models.PersonProfile).filter(
         models.PersonProfile.id == person_id,
@@ -202,7 +200,7 @@ def presign_upload(person_id: int, request: PresignUploadRequest, db: Session = 
     s3_key = f"uploads/{person_id}/{unique_id}_{safe_filename}"
     
     # Generate presigned URL
-    presigned_data = s3_service.generate_presigned_put_url(
+    presigned_data = s3.generate_presigned_put_url(
         key=s3_key,
         content_type=request.content_type
     )
@@ -262,6 +260,7 @@ def list_photos(person_id: int, db: Session = Depends(get_db)):
 @router.get("/{person_id}/photos/{photo_id}/url")
 def get_photo_url(person_id: int, photo_id: int, db: Session = Depends(get_db)):
     """Get presigned URL for photo."""
+    s3 = get_s3_service()
     photo = db.query(models.PhotoAsset).filter(
         models.PhotoAsset.id == photo_id,
         models.PhotoAsset.person_id == person_id
@@ -270,7 +269,7 @@ def get_photo_url(person_id: int, photo_id: int, db: Session = Depends(get_db)):
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
     
-    url = s3_service.generate_presigned_get_url(photo.s3_key)
+    url = s3.generate_presigned_get_url(photo.s3_key)
     return {"url": url}
 
 

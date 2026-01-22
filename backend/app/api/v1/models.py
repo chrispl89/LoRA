@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from app.api.dependencies import get_db
 from app.db import models
-from app.services.s3 import s3_service
 from app.core.guardrails import validate_consent
 from app.core.logging import get_logger
 from app.workers.gpu.tasks import train_model_task

@@ -1,11 +1,17 @@
 """
 MinIO / S3 client for object storage.
+
+IMPORTANT: This module must NOT attempt to connect to MinIO at import time.
+Otherwise the API and tests would crash when MinIO isn't running yet.
 """
-from typing import Optional
-from datetime import timedelta
+
+from __future__ import annotations
+
+from functools import lru_cache
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
+
 from app.core.config import settings
 from app.core.logging import get_logger
 
@@ -14,23 +20,34 @@ logger = get_logger(__name__)
 
 class S3Service:
     """S3-compatible storage service (MinIO)."""
-    
+
     def __init__(self):
         self.bucket_name = settings.MINIO_BUCKET_NAME
         self.client = boto3.client(
-            's3',
+            "s3",
             endpoint_url=f"{'https' if settings.MINIO_USE_SSL else 'http'}://{settings.MINIO_ENDPOINT}",
             aws_access_key_id=settings.MINIO_ACCESS_KEY,
             aws_secret_access_key=settings.MINIO_SECRET_KEY,
-            config=Config(signature_version='s3v4'),
-            region_name='us-east-1'  # MinIO doesn't care about region
+            config=Config(
+                signature_version="s3v4",
+                connect_timeout=2,
+                read_timeout=5,
+                retries={"max_attempts": 2, "mode": "standard"},
+            ),
+            region_name="us-east-1",  # MinIO doesn't care about region
         )
         self._ensure_bucket()
-    
+
     def _ensure_bucket(self):
         """Ensure bucket exists."""
         try:
             self.client.head_bucket(Bucket=self.bucket_name)
+        except EndpointConnectionError as e:
+            logger.error("minio_unreachable", endpoint=settings.MINIO_ENDPOINT, error=str(e))
+            raise RuntimeError(
+                f"MinIO/S3 endpoint unreachable: {settings.MINIO_ENDPOINT}. "
+                "Start MinIO and verify MINIO_ENDPOINT/MINIO_USE_SSL."
+            ) from e
         except ClientError:
             try:
                 self.client.create_bucket(Bucket=self.bucket_name)
@@ -155,4 +172,7 @@ class S3Service:
         logger.info("prefix_deleted", prefix=prefix, count=len(keys))
 
 
-s3_service = S3Service()
+@lru_cache(maxsize=1)
+def get_s3_service() -> S3Service:
+    """Lazily create the S3 client (MinIO may not be up at import time)."""
+    return S3Service()

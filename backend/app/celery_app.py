@@ -24,3 +24,11 @@ celery_app.conf.update(
     task_time_limit=3600 * 2,  # 2 hours max
     worker_prefetch_multiplier=1,
 )
+
+# Route tasks to dedicated queues so you can run separate workers:
+# - CPU worker: -Q cpu_tasks
+# - GPU worker: -Q gpu_tasks
+celery_app.conf.task_routes = {
+    "cpu.*": {"queue": "cpu_tasks"},
+    "gpu.*": {"queue": "gpu_tasks"},
+}

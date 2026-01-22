@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from app.api.dependencies import get_db
 from app.db import models
-from app.services.s3 import s3_service
+from app.services.s3 import get_s3_service
 from app.core.guardrails import check_prompt_safety
 from app.core.logging import get_logger
 from app.workers.gpu.tasks import generate_image_task
@@ -112,6 +112,7 @@ def create_generation(gen_data: GenerationCreate, db: Session = Depends(get_db))
 @router.get("/{generation_id}", response_model=GenerationResponse)
 def get_generation(generation_id: int, db: Session = Depends(get_db)):
     """Get generation status and result."""
+    s3 = get_s3_service()
     generation = db.query(models.Generation).filter(
         models.Generation.id == generation_id
     ).first()
@@ -124,10 +125,10 @@ def get_generation(generation_id: int, db: Session = Depends(get_db)):
     thumbnail_url = None
     
     if generation.output_s3_key:
-        output_url = s3_service.generate_presigned_get_url(generation.output_s3_key)
+        output_url = s3.generate_presigned_get_url(generation.output_s3_key)
     
     if generation.thumbnail_s3_key:
-        thumbnail_url = s3_service.generate_presigned_get_url(generation.thumbnail_s3_key)
+        thumbnail_url = s3.generate_presigned_get_url(generation.thumbnail_s3_key)
     
     # Convert to response model
     response = GenerationResponse(
