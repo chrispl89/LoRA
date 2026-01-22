@@ -1,6 +1,9 @@
 """
 Person profile endpoints.
 """
+import os
+import re
+import uuid
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -189,8 +192,14 @@ def presign_upload(person_id: int, request: PresignUploadRequest, db: Session = 
             detail=f"Maximum {settings.MAX_PHOTOS} photos allowed"
         )
     
-    # Generate S3 key
-    s3_key = f"uploads/{person_id}/{request.filename}"
+    # Sanitize filename (remove path components and special characters)
+    safe_filename = os.path.basename(request.filename)
+    safe_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', safe_filename)
+    safe_filename = safe_filename[:255]  # Limit length
+    
+    # Generate S3 key with unique ID for uniqueness
+    unique_id = str(uuid.uuid4())[:8]
+    s3_key = f"uploads/{person_id}/{unique_id}_{safe_filename}"
     
     # Generate presigned URL
     presigned_data = s3_service.generate_presigned_put_url(

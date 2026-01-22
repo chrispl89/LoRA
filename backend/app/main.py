@@ -6,6 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.api.v1 import api_router
+from app.db.base import Base
+from app.db.session import engine
 
 # Setup logging
 setup_logging(settings.LOG_LEVEL)
@@ -29,6 +31,16 @@ app.add_middleware(
 
 # Include routers
 app.include_router(api_router, prefix="/v1")
+
+
+@app.on_event("startup")
+def on_startup():
+    """
+    Ensure DB tables exist.
+
+    In local/dev we support SQLite to simplify setup (no Postgres password required).
+    """
+    Base.metadata.create_all(bind=engine)
 
 
 @app.get("/health")

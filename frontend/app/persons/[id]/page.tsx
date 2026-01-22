@@ -73,7 +73,10 @@ export default function PersonDetail() {
         }
       )
 
-      if (!presignRes.ok) throw new Error('Failed to get upload URL')
+      if (!presignRes.ok) {
+        const errorData = await presignRes.json().catch(() => ({ detail: 'Failed to get upload URL' }))
+        throw new Error(errorData.detail || 'Failed to get upload URL')
+      }
       const { url, key } = await presignRes.json()
 
       // Upload to S3
@@ -83,10 +86,12 @@ export default function PersonDetail() {
         headers: { 'Content-Type': file.type },
       })
 
-      if (!uploadRes.ok) throw new Error('Upload failed')
+      if (!uploadRes.ok) {
+        throw new Error(`Upload failed: ${uploadRes.status} ${uploadRes.statusText}`)
+      }
 
       // Complete registration
-      await fetch(`${API_URL}/v1/persons/${personId}/photos/complete`, {
+      const completeRes = await fetch(`${API_URL}/v1/persons/${personId}/photos/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -96,6 +101,14 @@ export default function PersonDetail() {
         }),
       })
 
+      if (!completeRes.ok) {
+        const errorData = await completeRes.json().catch(() => ({ detail: 'Failed to register photo' }))
+        throw new Error(errorData.detail || 'Failed to register photo')
+      }
+
+      // Reset file input
+      e.target.value = ''
+      
       await fetchData()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed')
@@ -134,13 +147,33 @@ export default function PersonDetail() {
       <div className="card">
         <h2>Photos ({photos.length})</h2>
         <div style={{ marginBottom: '15px' }}>
+          <label style={{ display: 'block', marginBottom: '10px', fontWeight: 500 }}>
+            Upload Photo
+          </label>
           <input
             type="file"
             accept="image/jpeg,image/png,image/webp"
             onChange={handleFileUpload}
             disabled={uploading}
+            style={{ 
+              padding: '8px',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              width: '100%',
+              maxWidth: '400px',
+              cursor: uploading ? 'not-allowed' : 'pointer'
+            }}
           />
-          {uploading && <span style={{ marginLeft: '10px' }}>Uploading...</span>}
+          {uploading && (
+            <div style={{ marginTop: '10px', color: '#666' }}>
+              <span>Uploading...</span>
+            </div>
+          )}
+          {error && (
+            <div style={{ marginTop: '10px', color: '#dc3545', fontSize: '14px' }}>
+              {error}
+            </div>
+          )}
         </div>
 
         {photos.length > 0 && (

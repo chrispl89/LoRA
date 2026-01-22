@@ -52,6 +52,7 @@ logs/
 
 # MinIO local data
 minio-data/
+minio.exe
 
 # Models and outputs (local)
 models/
