@@ -21,6 +21,9 @@ backend/
 ## Uruchomienie
 
 ```bash
+# Konfiguracja
+cp env.example .env
+
 # Instalacja
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate

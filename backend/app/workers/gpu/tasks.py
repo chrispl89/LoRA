@@ -10,7 +10,7 @@ from sqlalchemy import func
 from app.celery_app import celery_app
 from app.db.session import SessionLocal
 from app.db import models
-from app.services.s3 import s3_service
+from app.services.s3 import get_s3_service
 from app.services.trainer.train import run_training
 from app.services.inference.generate import generate_image, generate_thumbnail
 from app.core.logging import get_logger
@@ -73,16 +73,17 @@ def train_model_task(self, model_version_id: int):
         
         # Download dataset
         with tempfile.TemporaryDirectory() as temp_dir:
+            s3 = get_s3_service()
             temp_path = Path(temp_dir)
             dataset_dir = temp_path / "dataset"
             dataset_dir.mkdir()
             
             # List and download processed images
-            dataset_keys = s3_service.list_files(preprocess_run.output_s3_prefix)
+            dataset_keys = s3.list_files(preprocess_run.output_s3_prefix)
             for key in dataset_keys:
                 if key.endswith(('.jpg', '.jpeg', '.png')):
                     local_path = dataset_dir / Path(key).name
-                    s3_service.download_file(key, str(local_path))
+                    s3.download_file(key, str(local_path))
             
             # Prepare training config
             train_config = model_version.train_config_json or {}
@@ -131,26 +132,22 @@ def train_model_task(self, model_version_id: int):
                 if isinstance(artifact_path, list):
                     for sample_path in artifact_path:
                         key = f"{artifact_prefix}{Path(sample_path).name}"
-                        s3_service.upload_file(sample_path, key)
+                        s3.upload_file(sample_path, key)
                         uploaded_keys.append(key)
-                    continue
-
-                # Directory artifacts (e.g. LoRA folder)
-                ap = Path(artifact_path)
-                if ap.exists() and ap.is_dir():
-                    for file_path in ap.rglob("*"):
-                        if not file_path.is_file():
-                            continue
-                        rel = file_path.relative_to(ap).as_posix()
-                        key = f"{artifact_prefix}{artifact_type}/{rel}"
-                        s3_service.upload_file(str(file_path), key)
+                else:
+                    ap = Path(artifact_path)
+                    if ap.exists() and ap.is_dir():
+                        for file_path in ap.rglob("*"):
+                            if not file_path.is_file():
+                                continue
+                            rel = file_path.relative_to(ap).as_posix()
+                            key = f"{artifact_prefix}{artifact_type}/{rel}"
+                            s3.upload_file(str(file_path), key)
+                            uploaded_keys.append(key)
+                    else:
+                        key = f"{artifact_prefix}{Path(artifact_path).name}"
+                        s3.upload_file(str(artifact_path), key)
                         uploaded_keys.append(key)
-                    continue
-
-                # Single file artifacts
-                key = f"{artifact_prefix}{Path(artifact_path).name}"
-                s3_service.upload_file(artifact_path, key)
-                uploaded_keys.append(key)
             
             # Update model version
             model_version.artifact_s3_prefix = artifact_prefix
@@ -224,6 +221,7 @@ def generate_image_task(self, generation_id: int):
 
         # Generate image
         with tempfile.TemporaryDirectory() as temp_dir:
+            s3 = get_s3_service()
             temp_path = Path(temp_dir)
             output_file = temp_path / f"generation_{generation_id}.png"
 
@@ -285,13 +283,13 @@ def generate_image_task(self, generation_id: int):
             
             # Upload to S3
             output_key = f"outputs/{generation_id}.png"
-            s3_service.upload_file(str(output_file), output_key, "image/png")
+            s3.upload_file(str(output_file), output_key, "image/png")
             
             # Generate thumbnail
             thumbnail_file = temp_path / f"thumb_{generation_id}.png"
             generate_thumbnail(str(output_file), str(thumbnail_file))
             thumbnail_key = f"outputs/thumbnails/{generation_id}.png"
-            s3_service.upload_file(str(thumbnail_file), thumbnail_key, "image/png")
+            s3.upload_file(str(thumbnail_file), thumbnail_key, "image/png")
             
             # Update generation
             generation.output_s3_key = output_key

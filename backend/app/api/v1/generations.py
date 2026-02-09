@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from app.api.dependencies import get_db
 from app.db import models
-from app.services.s3 import s3_service
+from app.services.s3 import get_s3_service
 from app.core.guardrails import check_prompt_safety
 from app.core.logging import get_logger
 from app.workers.gpu.tasks import generate_image_task
@@ -48,14 +48,15 @@ class GenerationResponse(BaseModel):
 
 def _to_generation_response(generation: models.Generation) -> GenerationResponse:
     """Convert DB model to response with presigned URLs."""
+    s3 = get_s3_service()
     output_url = None
     thumbnail_url = None
 
     if generation.output_s3_key:
-        output_url = s3_service.generate_presigned_get_url(generation.output_s3_key)
+        output_url = s3.generate_presigned_get_url(generation.output_s3_key)
 
     if generation.thumbnail_s3_key:
-        thumbnail_url = s3_service.generate_presigned_get_url(generation.thumbnail_s3_key)
+        thumbnail_url = s3.generate_presigned_get_url(generation.thumbnail_s3_key)
 
     return GenerationResponse(
         id=generation.id,
@@ -170,6 +171,7 @@ def list_generations(
 @router.get("/{generation_id}", response_model=GenerationResponse)
 def get_generation(generation_id: int, db: Session = Depends(get_db)):
     """Get generation status and result."""
+    s3 = get_s3_service()
     generation = db.query(models.Generation).filter(
         models.Generation.id == generation_id
     ).first()
@@ -177,4 +179,28 @@ def get_generation(generation_id: int, db: Session = Depends(get_db)):
     if not generation:
         raise HTTPException(status_code=404, detail="Generation not found")
     
-    return _to_generation_response(generation)
+    # Generate presigned URLs if available
+    output_url = None
+    thumbnail_url = None
+    
+    if generation.output_s3_key:
+        output_url = s3.generate_presigned_get_url(generation.output_s3_key)
+    
+    if generation.thumbnail_s3_key:
+        thumbnail_url = s3.generate_presigned_get_url(generation.thumbnail_s3_key)
+    
+    return GenerationResponse(
+        id=generation.id,
+        model_version_id=generation.model_version_id,
+        prompt=generation.prompt,
+        negative_prompt=generation.negative_prompt,
+        steps=generation.steps,
+        width=generation.width,
+        height=generation.height,
+        seed=generation.seed,
+        status=generation.status,
+        output_url=output_url,
+        thumbnail_url=thumbnail_url,
+        error_message=generation.error_message,
+        created_at=generation.created_at
+    )

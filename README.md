@@ -197,7 +197,6 @@ W tym projekcie “model” to:
 ### Co wybrać?
 
 Jeśli działasz na CPU i chcesz “żeby działało”: **SD 1.5**.
-
 ### 3. Backend
 
 ```bash

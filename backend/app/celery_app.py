@@ -23,10 +23,14 @@ celery_app.conf.update(
     task_track_started=True,
     task_time_limit=3600 * 2,  # 2 hours max
     worker_prefetch_multiplier=1,
-    task_routes={
-        # Ensure tasks go to the intended queues
-        "cpu.preprocess_person": {"queue": "cpu_tasks"},
-        "gpu.train_model": {"queue": "gpu_tasks"},
-        "gpu.generate_image": {"queue": "gpu_tasks"},
-    },
+    task_always_eager=settings.CELERY_ALWAYS_EAGER,
+    task_eager_propagates=True,
 )
+
+# Route tasks to dedicated queues so you can run separate workers:
+# - CPU worker: -Q cpu_tasks
+# - GPU worker: -Q gpu_tasks
+celery_app.conf.task_routes = {
+    "cpu.*": {"queue": "cpu_tasks"},
+    "gpu.*": {"queue": "gpu_tasks"},
+}
