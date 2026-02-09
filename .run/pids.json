@@ -1,0 +1,7 @@
+{
+    "minio":  23384,
+    "redis":  null,
+    "api":  25196,
+    "celery":  24460,
+    "frontend":  12660
+}

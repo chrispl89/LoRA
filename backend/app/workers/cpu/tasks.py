@@ -18,7 +18,7 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-@celery_app.task(bind=True, name="cpu.preprocess_person")
+@celery_app.task(bind=True, name="cpu.preprocess_person", queue="cpu_tasks")
 def preprocess_person_task(self, person_id: int, preprocess_run_id: int):
     """
     Preprocess person photos: deduplication, normalization, face detection (stub).
@@ -59,6 +59,11 @@ def preprocess_person_task(self, person_id: int, preprocess_run_id: int):
         if not photos:
             preprocess_run.status = "failed"
             preprocess_run.error_message = "No photos found"
+            if job:
+                job.status = "failed"
+                job.error_message = "No photos found"
+                job.finished_at = func.now()
+            preprocess_run.finished_at = func.now()
             db.commit()
             return
         

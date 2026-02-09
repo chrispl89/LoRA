@@ -20,7 +20,8 @@ router = APIRouter()
 class ModelCreate(BaseModel):
     person_id: int
     name: str = Field(..., min_length=1, max_length=255)
-    base_model_name: str = Field(default="runwayml/stable-diffusion-v1-5")
+    # In offline runtime this should point to a local alias (e.g. "sd15") or local dir.
+    base_model_name: str = Field(default="sd15")
     trigger_token: str = Field(..., min_length=1, max_length=100)
     train_config: Optional[dict] = None
 
@@ -44,6 +45,7 @@ class ModelVersionResponse(BaseModel):
     train_config_json: Optional[dict]
     artifact_s3_prefix: Optional[str]
     status: str
+    error_message: Optional[str] = None
     created_at: datetime
     
     class Config:

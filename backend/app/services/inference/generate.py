@@ -1,12 +1,24 @@
 """
-Image generation service - STUB implementation.
-TODO: Replace with actual diffusers inference pipeline.
+Image generation service (real inference with diffusers).
+
+Loads a Stable Diffusion base model and applies LoRA weights (UNet attention processors).
+CPU-only inference is supported but can be very slow.
 """
-import time
+
+from __future__ import annotations
+
+import os
 from pathlib import Path
-from typing import Dict, Any, Optional
-from PIL import Image, ImageDraw, ImageFont
+from typing import Optional, Callable
+
+import torch
+from PIL import Image
+
+from diffusers import StableDiffusionPipeline
+from peft import PeftModel
+
 from app.core.logging import get_logger
+from app.services.base_models import apply_runtime_offline_env, ensure_base_model_present
 
 logger = get_logger(__name__)
 
@@ -16,74 +28,64 @@ def generate_image(
     negative_prompt: Optional[str] = None,
     model_version_id: int = None,
     lora_path: Optional[str] = None,
-    steps: int = 50,
+    steps: int = 30,
     width: int = 512,
     height: int = 512,
     seed: Optional[int] = None,
-    output_path: str = None
+    output_path: str = None,
+    base_model_name: str = "sd15",
+    hf_token: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> str:
-    """
-    Generate image (STUB - placeholder implementation).
-    
-    Args:
-        prompt: Text prompt
-        negative_prompt: Negative prompt
-        model_version_id: Model version ID
-        lora_path: Path to LoRA weights (optional)
-        steps: Number of steps
-        width: Image width
-        height: Image height
-        seed: Random seed
-        output_path: Path to save generated image
-    
-    Returns:
-        Path to generated image
-    """
-    logger.info(
-        "generation_started",
-        prompt=prompt[:50],  # Log first 50 chars
-        steps=steps,
-        width=width,
-        height=height
+    logger.info("generation_started", prompt=prompt[:80], steps=steps, width=width, height=height)
+
+    device = torch.device("cpu")
+
+    apply_runtime_offline_env()
+    base_model_dir = ensure_base_model_present(base_model_name)
+
+    pipe = StableDiffusionPipeline.from_pretrained(
+        str(base_model_dir),
+        safety_checker=None,
+        requires_safety_checker=False,
+        torch_dtype=torch.float32,
+        local_files_only=True,
     )
-    
-    # STUB: Simulate generation
-    time.sleep(0.5)  # Simulate work
-    
-    # STUB: Create placeholder image
-    output_file = Path(output_path) if output_path else Path(f"output_{int(time.time())}.png")
+    pipe.to(device)
+    pipe.enable_attention_slicing()
+    pipe.enable_vae_slicing()
+
+    if lora_path:
+        # Load PEFT adapter into UNet
+        pipe.unet = PeftModel.from_pretrained(pipe.unet, lora_path)
+
+    generator = None
+    if seed is not None:
+        generator = torch.Generator(device=device).manual_seed(int(seed))
+
+    total_steps = int(steps)
+
+    def _cb(step: int, timestep: int, latents) -> None:  # diffusers callback signature
+        if progress_callback:
+            progress_callback(int(step), total_steps)
+
+    image: Image.Image = pipe(
+        prompt=prompt,
+        negative_prompt=negative_prompt if negative_prompt else None,
+        num_inference_steps=int(steps),
+        height=int(height),
+        width=int(width),
+        generator=generator,
+        guidance_scale=7.5,
+        callback=_cb if progress_callback else None,
+        callback_steps=1 if progress_callback else None,
+    ).images[0]
+
+    output_file = Path(output_path) if output_path else Path(f"output_{model_version_id or 'x'}.png")
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Create a simple placeholder image with text
-    img = Image.new('RGB', (width, height), color='white')
-    draw = ImageDraw.Draw(img)
-    
-    # Try to use a font, fallback to default
-    try:
-        font = ImageFont.truetype("arial.ttf", 24)
-    except:
-        font = ImageFont.load_default()
-    
-    # Draw prompt text
-    text = f"STUB\nPrompt: {prompt[:30]}...\nSteps: {steps}\nSize: {width}x{height}"
-    if seed:
-        text += f"\nSeed: {seed}"
-    
-    # Center text
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
-    position = ((width - text_width) // 2, (height - text_height) // 2)
-    
-    draw.text(position, text, fill='black', font=font)
-    
-    # Add border
-    draw.rectangle([0, 0, width-1, height-1], outline='gray', width=2)
-    
-    img.save(output_file)
-    
+    image.save(output_file)
+
     logger.info("generation_completed", output_path=str(output_file))
-    
     return str(output_file)
 
 

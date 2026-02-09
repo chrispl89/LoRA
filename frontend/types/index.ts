@@ -46,6 +46,7 @@ export interface ModelVersion {
   train_config_json?: any
   artifact_s3_prefix?: string
   status: string
+  error_message?: string
   created_at: string
 }
 

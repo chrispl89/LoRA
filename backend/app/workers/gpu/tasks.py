@@ -3,6 +3,7 @@ GPU worker tasks for training and inference (STUB).
 """
 import os
 import tempfile
+import time
 from pathlib import Path
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -13,6 +14,7 @@ from app.services.s3 import s3_service
 from app.services.trainer.train import run_training
 from app.services.inference.generate import generate_image, generate_thumbnail
 from app.core.logging import get_logger
+from app.core.config import settings
 
 logger = get_logger(__name__)
 
@@ -42,9 +44,17 @@ def train_model_task(self, model_version_id: int):
             job.status = "started"
             job.started_at = func.now()
             db.commit()
+
+        def add_event(event_type: str, message: str, meta: dict | None = None) -> None:
+            if not job:
+                return
+            ev = models.JobEvent(job_id=job.id, event_type=event_type, message=message, metadata_json=meta or None)
+            db.add(ev)
+            db.commit()
         
         model_version.status = "training"
         db.commit()
+        add_event("milestone", "training_started", {"model_version_id": model_version_id})
         
         logger.info("training_started", model_version_id=model_version_id)
         
@@ -80,13 +90,37 @@ def train_model_task(self, model_version_id: int):
                 "base_model_name": model_version.base_model_name,
                 "trigger_token": model_version.trigger_token,
             })
+
+            total_steps = int(train_config.get("steps", 200))
+            t0 = time.time()
+
+            def progress_cb(step: int, total: int, loss: float) -> None:
+                elapsed = max(0.0, time.time() - t0)
+                eta = None
+                if step > 0:
+                    rate = elapsed / float(step)
+                    eta = max(0.0, rate * max(0, (total - step)))
+                meta = {
+                    "current": int(step),
+                    "total": int(total),
+                    "loss": float(loss),
+                    "elapsed_seconds": float(elapsed),
+                    "eta_seconds": float(eta) if eta is not None else None,
+                }
+                # Persist + expose via Celery task meta.
+                add_event("progress", f"step {step}/{total} loss={loss:.6f}", meta)
+                try:
+                    self.update_state(state="PROGRESS", meta=meta)
+                except Exception:
+                    pass
             
-            # Run training (STUB)
+            # Run training (diffusers)
             output_dir = temp_path / "model_output"
             artifacts = run_training(
                 config=train_config,
                 dataset_path=str(dataset_dir),
-                output_path=str(output_dir)
+                output_path=str(output_dir),
+                progress_callback=progress_cb,
             )
             
             # Upload artifacts to S3
@@ -95,15 +129,28 @@ def train_model_task(self, model_version_id: int):
             
             for artifact_type, artifact_path in artifacts.items():
                 if isinstance(artifact_path, list):
-                    # Multiple files (e.g., samples)
                     for sample_path in artifact_path:
                         key = f"{artifact_prefix}{Path(sample_path).name}"
                         s3_service.upload_file(sample_path, key)
                         uploaded_keys.append(key)
-                else:
-                    key = f"{artifact_prefix}{Path(artifact_path).name}"
-                    s3_service.upload_file(artifact_path, key)
-                    uploaded_keys.append(key)
+                    continue
+
+                # Directory artifacts (e.g. LoRA folder)
+                ap = Path(artifact_path)
+                if ap.exists() and ap.is_dir():
+                    for file_path in ap.rglob("*"):
+                        if not file_path.is_file():
+                            continue
+                        rel = file_path.relative_to(ap).as_posix()
+                        key = f"{artifact_prefix}{artifact_type}/{rel}"
+                        s3_service.upload_file(str(file_path), key)
+                        uploaded_keys.append(key)
+                    continue
+
+                # Single file artifacts
+                key = f"{artifact_prefix}{Path(artifact_path).name}"
+                s3_service.upload_file(artifact_path, key)
+                uploaded_keys.append(key)
             
             # Update model version
             model_version.artifact_s3_prefix = artifact_prefix
@@ -114,6 +161,7 @@ def train_model_task(self, model_version_id: int):
                 job.status = "finished"
                 job.finished_at = func.now()
                 db.commit()
+                add_event("milestone", "training_completed", {"model_version_id": model_version_id, "steps": total_steps})
             
             logger.info("training_completed", model_version_id=model_version_id)
     
@@ -157,26 +205,69 @@ def generate_image_task(self, generation_id: int):
             job.status = "started"
             job.started_at = func.now()
             db.commit()
+
+        def add_event(event_type: str, message: str, meta: dict | None = None) -> None:
+            if not job:
+                return
+            ev = models.JobEvent(job_id=job.id, event_type=event_type, message=message, metadata_json=meta or None)
+            db.add(ev)
+            db.commit()
         
         generation.status = "generating"
         db.commit()
         
         logger.info("generation_started", generation_id=generation_id)
+        add_event("milestone", "generation_started", {"generation_id": generation_id, "model_version_id": generation.model_version_id})
         
         # Get model version and LoRA path
         model_version = generation.model_version
-        lora_path = None
-        
-        if model_version.artifact_s3_prefix:
-            # Download LoRA weights (in real implementation)
-            # For stub, we'll skip this
-            pass
-        
-        # Generate image (STUB)
+
+        # Generate image
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             output_file = temp_path / f"generation_{generation_id}.png"
+
+            # Download LoRA adapter into the same temp dir (so it exists during generation)
+            lora_path = None
+            if model_version.artifact_s3_prefix:
+                lora_dir = temp_path / "lora"
+                lora_dir.mkdir(parents=True, exist_ok=True)
+
+                prefix = f"{model_version.artifact_s3_prefix}lora_dir/"
+                keys = s3_service.list_files(prefix)
+                for key in keys:
+                    if key.endswith("/"):
+                        continue
+                    rel = key[len(prefix):]
+                    out_path = lora_dir / rel
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    s3_service.download_file(key, str(out_path))
+
+                lora_path = str(lora_dir)
             
+            t0 = time.time()
+
+            def progress_cb(step: int, total: int) -> None:
+                # Avoid DB spam: log every 5 steps
+                if step % 5 != 0 and step != total - 1:
+                    return
+                elapsed = max(0.0, time.time() - t0)
+                eta = None
+                if step > 0:
+                    rate = elapsed / float(step)
+                    eta = max(0.0, rate * max(0, (total - step)))
+                meta = {
+                    "current": int(step),
+                    "total": int(total),
+                    "elapsed_seconds": float(elapsed),
+                    "eta_seconds": float(eta) if eta is not None else None,
+                }
+                add_event("progress", f"diffusion_step {step}/{total}", meta)
+                try:
+                    self.update_state(state="PROGRESS", meta=meta)
+                except Exception:
+                    pass
+
             generate_image(
                 prompt=generation.prompt,
                 negative_prompt=generation.negative_prompt,
@@ -186,7 +277,10 @@ def generate_image_task(self, generation_id: int):
                 width=generation.width,
                 height=generation.height,
                 seed=generation.seed,
-                output_path=str(output_file)
+                output_path=str(output_file),
+                base_model_name=model_version.base_model_name,
+                hf_token=settings.HUGGINGFACE_HUB_TOKEN,
+                progress_callback=progress_cb,
             )
             
             # Upload to S3
@@ -209,6 +303,7 @@ def generate_image_task(self, generation_id: int):
                 job.status = "finished"
                 job.finished_at = func.now()
                 db.commit()
+                add_event("milestone", "generation_completed", {"generation_id": generation_id})
             
             logger.info("generation_completed", generation_id=generation_id)
     
@@ -221,6 +316,10 @@ def generate_image_task(self, generation_id: int):
             job.status = "failed"
             job.error_message = str(e)
         db.commit()
+        try:
+            add_event("error", "generation_failed", {"generation_id": generation_id, "error": str(e)})
+        except Exception:
+            pass
         raise
     
     finally:

@@ -77,6 +77,23 @@ class PreprocessResponse(BaseModel):
     status: str
 
 
+class PreprocessRunResponse(BaseModel):
+    id: int
+    person_id: int
+    status: str
+    images_accepted: int
+    images_rejected: int
+    images_duplicates: int
+    output_s3_prefix: str | None = None
+    error_message: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 @router.post("", response_model=PersonResponse, status_code=status.HTTP_201_CREATED)
 def create_person(person: PersonCreate, db: Session = Depends(get_db)):
     """Create person profile with consent validation."""
@@ -274,6 +291,35 @@ def get_photo_url(person_id: int, photo_id: int, db: Session = Depends(get_db)):
     return {"url": url}
 
 
+@router.delete("/{person_id}/photos/{photo_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_photo(person_id: int, photo_id: int, db: Session = Depends(get_db)):
+    """Delete a photo (DB + S3 cleanup)."""
+    photo = db.query(models.PhotoAsset).filter(
+        models.PhotoAsset.id == photo_id,
+        models.PhotoAsset.person_id == person_id
+    ).first()
+
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    # Best-effort cleanup in S3
+    try:
+        s3_service.delete_file(photo.s3_key)
+    except Exception as e:
+        logger.error("photo_s3_delete_failed", photo_id=photo.id, error=str(e))
+
+    # Also delete processed artifact if it exists (best-effort)
+    try:
+        processed_key = f"datasets/processed/{person_id}/processed_{photo.id}.jpg"
+        s3_service.delete_file(processed_key)
+    except Exception:
+        pass
+
+    db.delete(photo)
+    db.commit()
+    return None
+
+
 @router.post("/{person_id}/preprocess", response_model=PreprocessResponse)
 def start_preprocess(person_id: int, db: Session = Depends(get_db)):
     """Start preprocessing job."""
@@ -294,16 +340,41 @@ def start_preprocess(person_id: int, db: Session = Depends(get_db)):
             detail=f"Cannot preprocess: {error_msg}"
         )
     
-    # Check photo count
-    photo_count = db.query(models.PhotoAsset).filter(
+    # Count uploaded photos (new photos to process)
+    uploaded_count = db.query(models.PhotoAsset).filter(
         models.PhotoAsset.person_id == person_id,
         models.PhotoAsset.status == "uploaded"
     ).count()
-    
-    if photo_count < settings.MIN_PHOTOS:
+
+    # If nothing new to process, don't create another run. Return latest finished (or latest) run info.
+    if uploaded_count == 0:
+        latest_finished = db.query(models.PreprocessRun).filter(
+            models.PreprocessRun.person_id == person_id,
+            models.PreprocessRun.status == "finished"
+        ).order_by(models.PreprocessRun.created_at.desc()).first()
+
+        latest_any = db.query(models.PreprocessRun).filter(
+            models.PreprocessRun.person_id == person_id
+        ).order_by(models.PreprocessRun.created_at.desc()).first()
+
+        run = latest_finished or latest_any
+        if run:
+            job = db.query(models.Job).filter(models.Job.preprocess_run_id == run.id).first()
+            return {
+                "preprocess_run_id": run.id,
+                "job_id": job.id if job else 0,
+                "status": run.status,
+            }
+
         raise HTTPException(
             status_code=400,
-            detail=f"Minimum {settings.MIN_PHOTOS} photos required"
+            detail=f"No uploaded photos to preprocess. Upload at least {settings.MIN_PHOTOS} photos first."
+        )
+
+    if uploaded_count < settings.MIN_PHOTOS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Minimum {settings.MIN_PHOTOS} uploaded photos required"
         )
     
     # Create preprocess run
@@ -337,3 +408,26 @@ def start_preprocess(person_id: int, db: Session = Depends(get_db)):
         "job_id": job.id,
         "status": "pending"
     }
+
+
+@router.get("/{person_id}/preprocess/latest", response_model=PreprocessRunResponse | None)
+def get_latest_preprocess_run(person_id: int, db: Session = Depends(get_db)):
+    """Get latest preprocess run for a person (if any)."""
+    person = db.query(models.PersonProfile).filter(
+        models.PersonProfile.id == person_id,
+        models.PersonProfile.deleted_at.is_(None)
+    ).first()
+
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    latest_finished = db.query(models.PreprocessRun).filter(
+        models.PreprocessRun.person_id == person_id,
+        models.PreprocessRun.status == "finished"
+    ).order_by(models.PreprocessRun.created_at.desc()).first()
+
+    run = latest_finished or db.query(models.PreprocessRun).filter(
+        models.PreprocessRun.person_id == person_id
+    ).order_by(models.PreprocessRun.created_at.desc()).first()
+
+    return run

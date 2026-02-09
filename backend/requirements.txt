@@ -25,6 +25,16 @@ minio==7.2.0
 Pillow==10.1.0
 imagehash==4.3.1
 
+# ML / Diffusers (for real LoRA training + inference)
+torch
+torchvision
+transformers
+diffusers
+accelerate
+safetensors
+huggingface_hub
+peft
+
 # Security
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4

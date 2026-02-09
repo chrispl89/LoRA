@@ -19,6 +19,8 @@ export default function PersonDetail() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [preprocessing, setPreprocessing] = useState(false)
+  const [deletingPhotoId, setDeletingPhotoId] = useState<number | null>(null)
 
   useEffect(() => {
     fetchData()
@@ -43,7 +45,15 @@ export default function PersonDetail() {
       }
 
       // Fetch latest preprocess run
-      // TODO: Add endpoint for this
+      try {
+        const preRes = await fetch(`${API_URL}/v1/persons/${personId}/preprocess/latest`)
+        if (preRes.ok) {
+          const preData = await preRes.json()
+          setPreprocessRun(preData)
+        }
+      } catch (err) {
+        console.error('Failed to fetch preprocess run:', err)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
@@ -52,58 +62,61 @@ export default function PersonDetail() {
   }
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+    const files = Array.from(e.target.files || [])
+    if (files.length === 0) return
 
     setUploading(true)
     setError(null)
 
     try {
-      // Get presigned URL
-      const presignRes = await fetch(
-        `${API_URL}/v1/persons/${personId}/uploads/presign`,
-        {
+      // Upload sequentially (simpler + avoids overload)
+      for (const file of files) {
+        // Get presigned URL
+        const presignRes = await fetch(
+          `${API_URL}/v1/persons/${personId}/uploads/presign`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              filename: file.name,
+              content_type: file.type,
+              size_bytes: file.size,
+            }),
+          }
+        )
+
+        if (!presignRes.ok) {
+          const errorData = await presignRes.json().catch(() => ({ detail: 'Failed to get upload URL' }))
+          throw new Error(errorData.detail || 'Failed to get upload URL')
+        }
+        const { url, key } = await presignRes.json()
+
+        // Upload to S3
+        const uploadRes = await fetch(url, {
+          method: 'PUT',
+          body: file,
+          headers: { 'Content-Type': file.type },
+        })
+
+        if (!uploadRes.ok) {
+          throw new Error(`Upload failed: ${uploadRes.status} ${uploadRes.statusText}`)
+        }
+
+        // Complete registration
+        const completeRes = await fetch(`${API_URL}/v1/persons/${personId}/photos/complete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            filename: file.name,
+            key,
             content_type: file.type,
             size_bytes: file.size,
           }),
+        })
+
+        if (!completeRes.ok) {
+          const errorData = await completeRes.json().catch(() => ({ detail: 'Failed to register photo' }))
+          throw new Error(errorData.detail || 'Failed to register photo')
         }
-      )
-
-      if (!presignRes.ok) {
-        const errorData = await presignRes.json().catch(() => ({ detail: 'Failed to get upload URL' }))
-        throw new Error(errorData.detail || 'Failed to get upload URL')
-      }
-      const { url, key } = await presignRes.json()
-
-      // Upload to S3
-      const uploadRes = await fetch(url, {
-        method: 'PUT',
-        body: file,
-        headers: { 'Content-Type': file.type },
-      })
-
-      if (!uploadRes.ok) {
-        throw new Error(`Upload failed: ${uploadRes.status} ${uploadRes.statusText}`)
-      }
-
-      // Complete registration
-      const completeRes = await fetch(`${API_URL}/v1/persons/${personId}/photos/complete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          key,
-          content_type: file.type,
-          size_bytes: file.size,
-        }),
-      })
-
-      if (!completeRes.ok) {
-        const errorData = await completeRes.json().catch(() => ({ detail: 'Failed to register photo' }))
-        throw new Error(errorData.detail || 'Failed to register photo')
       }
 
       // Reset file input
@@ -119,19 +132,46 @@ export default function PersonDetail() {
 
   const handlePreprocess = async () => {
     try {
+      setPreprocessing(true)
+      setError(null)
       const res = await fetch(`${API_URL}/v1/persons/${personId}/preprocess`, {
         method: 'POST',
       })
-      if (!res.ok) throw new Error('Failed to start preprocessing')
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ detail: 'Failed to start preprocessing' }))
+        throw new Error(data.detail || 'Failed to start preprocessing')
+      }
       await fetchData()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Preprocess failed')
+    } finally {
+      setPreprocessing(false)
+    }
+  }
+
+  const handleDeletePhoto = async (photoId: number) => {
+    try {
+      setDeletingPhotoId(photoId)
+      setError(null)
+      const res = await fetch(`${API_URL}/v1/persons/${personId}/photos/${photoId}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ detail: 'Failed to delete photo' }))
+        throw new Error(data.detail || 'Failed to delete photo')
+      }
+      await fetchData()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Delete failed')
+    } finally {
+      setDeletingPhotoId(null)
     }
   }
 
   if (loading) return <div className="loading">Loading...</div>
   if (error) return <div className="error">Error: {error}</div>
   if (!person) return <div>Person not found</div>
+
+  const uploadedCount = photos.filter((p) => p.status === 'uploaded').length
+  const remainingSlots = Math.max(0, 30 - photos.length)
 
   return (
     <div className="container">
@@ -150,11 +190,15 @@ export default function PersonDetail() {
           <label style={{ display: 'block', marginBottom: '10px', fontWeight: 500 }}>
             Upload Photo
           </label>
+          <div style={{ marginBottom: '8px', color: '#666' }}>
+            Remaining slots: {remainingSlots} / 30
+          </div>
           <input
             type="file"
             accept="image/jpeg,image/png,image/webp"
+            multiple
             onChange={handleFileUpload}
-            disabled={uploading}
+            disabled={uploading || remainingSlots === 0}
             style={{ 
               padding: '8px',
               border: '1px solid #ddd',
@@ -181,6 +225,25 @@ export default function PersonDetail() {
             {photos.map((photo) => (
               <div key={photo.id} className="photo-item">
                 <PhotoThumbnail personId={personId} photoId={photo.id} />
+                <button
+                  onClick={() => handleDeletePhoto(photo.id)}
+                  disabled={deletingPhotoId === photo.id}
+                  title="Delete photo"
+                  style={{
+                    position: 'absolute',
+                    top: '6px',
+                    right: '6px',
+                    background: 'rgba(0,0,0,0.6)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    padding: '6px 8px',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                  }}
+                >
+                  {deletingPhotoId === photo.id ? '...' : 'Delete'}
+                </button>
                 <div style={{ position: 'absolute', bottom: '5px', left: '5px' }}>
                   <span className={`status-badge status-${photo.status}`}>
                     {photo.status}
@@ -194,12 +257,18 @@ export default function PersonDetail() {
 
       <div className="card">
         <h2>Preprocessing</h2>
+        <p style={{ color: '#666', marginBottom: '10px' }}>
+          Preprocessing converts uploaded photos into a processed dataset (dedupe + resize) used for training.
+        </p>
+        <p style={{ color: '#666', marginBottom: '10px' }}>
+          Uploaded: {uploadedCount} / Total: {photos.length}
+        </p>
         <button
           onClick={handlePreprocess}
           className="btn btn-primary"
-          disabled={photos.length < 3}
+          disabled={preprocessing || uploadedCount < 3}
         >
-          Start Preprocessing
+          {preprocessing ? 'Starting...' : 'Start Preprocessing'}
         </button>
         {preprocessRun && (
           <div style={{ marginTop: '15px' }}>
@@ -208,6 +277,15 @@ export default function PersonDetail() {
             </span></p>
             {preprocessRun.images_accepted > 0 && (
               <p>Accepted: {preprocessRun.images_accepted}</p>
+            )}
+            {preprocessRun.images_duplicates > 0 && (
+              <p>Duplicates: {preprocessRun.images_duplicates}</p>
+            )}
+            {preprocessRun.images_rejected > 0 && (
+              <p>Rejected: {preprocessRun.images_rejected}</p>
+            )}
+            {preprocessRun.error_message && (
+              <p style={{ color: '#dc3545' }}>Error: {preprocessRun.error_message}</p>
             )}
           </div>
         )}

@@ -138,11 +138,25 @@ class S3Service:
     def list_files(self, prefix: str) -> list:
         """List files with prefix."""
         try:
-            response = self.client.list_objects_v2(
-                Bucket=self.bucket_name,
-                Prefix=prefix
-            )
-            return [obj['Key'] for obj in response.get('Contents', [])]
+            keys: list[str] = []
+            continuation: Optional[str] = None
+
+            while True:
+                kwargs = {"Bucket": self.bucket_name, "Prefix": prefix}
+                if continuation:
+                    kwargs["ContinuationToken"] = continuation
+
+                response = self.client.list_objects_v2(**kwargs)
+                keys.extend([obj["Key"] for obj in response.get("Contents", [])])
+
+                if response.get("IsTruncated"):
+                    continuation = response.get("NextContinuationToken")
+                    if not continuation:
+                        break
+                else:
+                    break
+
+            return keys
         except Exception as e:
             logger.error("list_files_failed", error=str(e), prefix=prefix)
             return []

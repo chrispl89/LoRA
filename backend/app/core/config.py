@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 from pydantic_settings import BaseSettings
 from typing import List
+from pathlib import Path
+import os
 
 
 class Settings(BaseSettings):
@@ -39,6 +43,17 @@ class Settings(BaseSettings):
     
     # Presigned URLs
     PRESIGNED_URL_EXPIRATION_SECONDS: int = 3600
+
+    # Hugging Face (required for downloading most Stable Diffusion base models)
+    HUGGINGFACE_HUB_TOKEN: str | None = None
+
+    # Project paths / offline runtime (HF used only as a downloader, not runtime)
+    # If unset, PROJECT_ROOT is inferred from this file location.
+    PROJECT_ROOT: str | None = None
+    MODELS_DIR: str | None = None
+
+    # Force offline in runtime (API/workers). This should be enabled in prod.
+    HF_RUNTIME_OFFLINE: bool = True
     
     # Celery
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
@@ -51,6 +66,27 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"
 
 
 settings = Settings()
+
+
+def get_project_root() -> Path:
+    """
+    Resolve repository root (directory containing `backend/` and `frontend/`).
+
+    Default: inferred from this file path; can be overridden by PROJECT_ROOT env.
+    """
+    if settings.PROJECT_ROOT:
+        return Path(settings.PROJECT_ROOT).expanduser().resolve()
+
+    # backend/app/core/config.py -> parents[0]=core, [1]=app, [2]=backend, [3]=repo root
+    return Path(__file__).resolve().parents[3]
+
+
+def get_models_dir() -> Path:
+    """Resolve root `models/` directory (repo-local by default)."""
+    if settings.MODELS_DIR:
+        return Path(settings.MODELS_DIR).expanduser().resolve()
+    return get_project_root() / "models"

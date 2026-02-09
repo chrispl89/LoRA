@@ -23,4 +23,10 @@ celery_app.conf.update(
     task_track_started=True,
     task_time_limit=3600 * 2,  # 2 hours max
     worker_prefetch_multiplier=1,
+    task_routes={
+        # Ensure tasks go to the intended queues
+        "cpu.preprocess_person": {"queue": "cpu_tasks"},
+        "gpu.train_model": {"queue": "gpu_tasks"},
+        "gpu.generate_image": {"queue": "gpu_tasks"},
+    },
 )

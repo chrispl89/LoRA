@@ -1,8 +1,8 @@
 """
 Generation endpoints.
 """
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Optional, List
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from datetime import datetime
@@ -44,6 +44,34 @@ class GenerationResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+def _to_generation_response(generation: models.Generation) -> GenerationResponse:
+    """Convert DB model to response with presigned URLs."""
+    output_url = None
+    thumbnail_url = None
+
+    if generation.output_s3_key:
+        output_url = s3_service.generate_presigned_get_url(generation.output_s3_key)
+
+    if generation.thumbnail_s3_key:
+        thumbnail_url = s3_service.generate_presigned_get_url(generation.thumbnail_s3_key)
+
+    return GenerationResponse(
+        id=generation.id,
+        model_version_id=generation.model_version_id,
+        prompt=generation.prompt,
+        negative_prompt=generation.negative_prompt,
+        steps=generation.steps,
+        width=generation.width,
+        height=generation.height,
+        seed=generation.seed,
+        status=generation.status,
+        output_url=output_url,
+        thumbnail_url=thumbnail_url,
+        error_message=generation.error_message,
+        created_at=generation.created_at,
+    )
 
 
 @router.post("", response_model=GenerationResponse, status_code=status.HTTP_201_CREATED)
@@ -106,7 +134,37 @@ def create_generation(gen_data: GenerationCreate, db: Session = Depends(get_db))
     
     logger.info("generation_created", generation_id=generation.id)
     
-    return generation
+    # response doesn't include URLs yet (generation not completed), but keep consistent shape
+    return _to_generation_response(generation)
+
+
+@router.get("", response_model=List[GenerationResponse])
+def list_generations(
+    skip: int = 0,
+    limit: int = Query(50, ge=1, le=200),
+    model_version_id: Optional[int] = Query(None),
+    person_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    List generations (optionally filtered).
+    Useful for showing generation history in UI.
+    """
+    q = db.query(models.Generation)
+
+    if model_version_id is not None:
+        q = q.filter(models.Generation.model_version_id == model_version_id)
+
+    if person_id is not None:
+        # join through model_version -> model -> person
+        q = (
+            q.join(models.ModelVersion, models.Generation.model_version_id == models.ModelVersion.id)
+            .join(models.Model, models.ModelVersion.model_id == models.Model.id)
+            .filter(models.Model.person_id == person_id)
+        )
+
+    gens = q.order_by(models.Generation.created_at.desc()).offset(skip).limit(limit).all()
+    return [_to_generation_response(g) for g in gens]
 
 
 @router.get("/{generation_id}", response_model=GenerationResponse)
@@ -119,31 +177,4 @@ def get_generation(generation_id: int, db: Session = Depends(get_db)):
     if not generation:
         raise HTTPException(status_code=404, detail="Generation not found")
     
-    # Generate presigned URLs if available
-    output_url = None
-    thumbnail_url = None
-    
-    if generation.output_s3_key:
-        output_url = s3_service.generate_presigned_get_url(generation.output_s3_key)
-    
-    if generation.thumbnail_s3_key:
-        thumbnail_url = s3_service.generate_presigned_get_url(generation.thumbnail_s3_key)
-    
-    # Convert to response model
-    response = GenerationResponse(
-        id=generation.id,
-        model_version_id=generation.model_version_id,
-        prompt=generation.prompt,
-        negative_prompt=generation.negative_prompt,
-        steps=generation.steps,
-        width=generation.width,
-        height=generation.height,
-        seed=generation.seed,
-        status=generation.status,
-        output_url=output_url,
-        thumbnail_url=thumbnail_url,
-        error_message=generation.error_message,
-        created_at=generation.created_at
-    )
-    
-    return response
+    return _to_generation_response(generation)
